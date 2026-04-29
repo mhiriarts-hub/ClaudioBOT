@@ -24,43 +24,60 @@ GASTOS_FILE = "/tmp/gastos_martin.json"
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Sistema de gastos persistente
-def cargar_gastos():
+# Sistema de saldo — trabaja con DISPONIBLE (cuanto queda)
+def cargar_datos():
     try:
         if os.path.exists(GASTOS_FILE):
             with open(GASTOS_FILE, "r") as f:
                 return json.load(f)
     except:
         pass
-    return {"mes": "", "total_gastado": 0, "detalle": []}
+    return {"mes": "", "disponible": OCIO_MENSUAL, "detalle": []}
 
-def guardar_gastos(data):
+def guardar_datos(data):
     try:
         with open(GASTOS_FILE, "w") as f:
             json.dump(data, f, ensure_ascii=False)
     except:
         pass
 
-def obtener_gastos_mes():
+def obtener_datos_mes():
     now = datetime.now(TZ)
     mes_actual = now.strftime("%Y-%m")
-    data = cargar_gastos()
+    data = cargar_datos()
     if data.get("mes") != mes_actual:
-        data = {"mes": mes_actual, "total_gastado": 0, "detalle": []}
-        guardar_gastos(data)
+        data = {"mes": mes_actual, "disponible": OCIO_MENSUAL, "detalle": []}
+        guardar_datos(data)
     return data
 
 def registrar_gasto(descripcion, monto):
     now = datetime.now(TZ)
-    data = obtener_gastos_mes()
-    data["total_gastado"] += monto
+    data = obtener_datos_mes()
+    data["disponible"] = max(0, data["disponible"] - monto)
     data["detalle"].append({
         "desc": descripcion,
-        "monto": monto,
+        "monto": -monto,
         "fecha": now.strftime("%d/%m %H:%M")
     })
-    guardar_gastos(data)
+    guardar_datos(data)
     return data
+
+def estado_saldo(disponible):
+    if disponible > 200000:
+        return "Verde - Vas bien"
+    elif disponible > 80000:
+        return "Amarillo - Con cuidado"
+    else:
+        return "Rojo - Sin margen"
+
+def extraer_monto(texto):
+    match = re.search(r"(\d[\d\.]*)\s*$", texto)
+    if match:
+        try:
+            return int(match.group(1).replace(".", ""))
+        except:
+            return 0
+    return 0
 
 # Recordatorios
 ONE_TIME_REMINDERS = [
@@ -82,7 +99,7 @@ ONE_TIME_REMINDERS = [
 MONTHLY_MESSAGE = (
     "Revision mensual de tu portafolio\n\n"
     "1. Cuanto tienes en Fintual hoy?\n"
-    "2. El APV de $232.000 se descontio correctamente?\n"
+    "2. El APV de $232.000 se desconto correctamente?\n"
     "3. El fondo matrimonio sumo $167.000?\n"
     "4. Alguna deuda nueva o gasto inesperado?\n"
     "5. Tarjeta de credito en cero?\n\n"
@@ -96,14 +113,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Hola Martin!\n\n"
         f"Soy tu bot de planificacion financiera.\n\n"
         f"Tu Chat ID es: {chat_id}\n\n"
-        f"Comandos disponibles:\n"
+        f"--- Comandos de inversion ---\n"
         f"/estado - Resumen de tu plan\n"
         f"/proximos - Proximos recordatorios\n"
         f"/checklist - Tareas del mes\n"
-        f"/presupuesto - Distribucion del sueldo\n"
-        f"/consulta [gasto] [monto] - Puedo gastar esto?\n"
+        f"/presupuesto - Distribucion del sueldo\n\n"
+        f"--- Comandos de gastos diarios ---\n"
+        f"/consulta [descripcion] [monto] - Puedo gastar esto?\n"
         f"/gaste [descripcion] [monto] - Registrar un gasto\n"
-        f"/saldo - Ver cuanto te queda de ocio este mes"
+        f"/saldo - Ver cuanto te queda de ocio\n\n"
+        f"--- Comandos de edicion ---\n"
+        f"/corregir [monto] - Fijar el disponible a un monto exacto\n"
+        f"/ajustar [monto] - Agregar plata al disponible\n"
+        f"/borrar - Deshacer el ultimo gasto\n"
+        f"/resetear confirmar - Reiniciar el mes desde cero"
     )
 
 async def estado(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -126,9 +149,9 @@ async def estado(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def presupuesto(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    data = obtener_gastos_mes()
-    gastado = data["total_gastado"]
-    disponible = max(0, OCIO_MENSUAL - gastado)
+    data = obtener_datos_mes()
+    disponible = data["disponible"]
+    gastado = OCIO_MENSUAL - disponible
     await update.message.reply_text(
         f"Distribucion del sueldo mensual ($2.070.000)\n\n"
         f"GASTOS FIJOS:\n"
@@ -139,9 +162,9 @@ async def presupuesto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"- Transporte/misc: $63.000\n"
         f"- TOTAL FIJOS: $1.712.000\n\n"
         f"OCIO DEL MES:\n"
-        f"- Presupuesto: ${OCIO_MENSUAL:,}\n"
+        f"- Presupuesto total: ${OCIO_MENSUAL:,}\n"
         f"- Gastado: ${gastado:,}\n"
-        f"- Disponible: ${disponible:,}\n\n"
+        f"- Disponible ahora: ${disponible:,}\n\n"
         f"Usa /saldo para ver el detalle de gastos."
     )
 
@@ -169,7 +192,7 @@ async def checklist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     checklists = {
         5: "Checklist Mayo 2026\n\n[ ] Abonar $500.000 a la tarjeta\n[ ] Subir ESPP a 15% en Shareworks (post-earnings 7/5)\n[ ] Vender TODAS las acciones Uber el 20/5\n[ ] Con el bono 28/5: pagar tarjeta + APV + Fintual\n[ ] Llamar a Security/BICE para rescatar fondos mutuos",
         6: "Checklist Junio 2026\n\n[ ] Activar APV automatico $232.000/mes en Fintual\n[ ] Abrir cuenta separada matrimonio\n[ ] Configurar transferencia $167.000/mes matrimonio\n[ ] Confirmar ESPP en 15%\n[ ] Confirmar fondos mutuos Security/BICE movidos a Fintual",
-        8: "Checklist Agosto 2026\n\n[ ] Bono Q2 llega ~28 agosto\n[ ] $500.000 al fondo matrimonio\n[ ] $800.000 a Fintual\n[ ] $200.000 extra al APV\n[ ] Revisar saldo fondo matrimonio",
+        8: "Checklist Agosto 2026\n\n[ ] Bono Q2 llega ~28 agosto\n[ ] $500.000 al fondo matrimonio\n[ ] $800.000 a Fintual\n[ ] $200.000 extra al APV",
         11: "Checklist Noviembre 2026\n\n[ ] Vender acciones Uber ESPP el 20/11\n[ ] Bono Q3 llega ~28 noviembre\n[ ] $500.000 al fondo matrimonio\n[ ] $1.000.000 a Fintual\n[ ] Evaluar mantener ESPP 15% para mayo 2027",
     }
     msg = checklists.get(month, "Checklist mensual\n\n[ ] Revisar saldo Fintual\n[ ] Confirmar descuento APV en liquidacion\n[ ] Revisar saldo fondo matrimonio\n[ ] Tarjeta de credito en cero?\n[ ] Alguna deuda nueva?")
@@ -188,23 +211,14 @@ async def consulta(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/consulta zapatillas 80000\n"
             "/consulta cena amigos 35000\n"
             "/consulta viaje 300000\n\n"
-            "Si lo compras, avisame:\n"
-            "/gaste descripcion monto\n\n"
+            "Si lo compras: /gaste descripcion monto\n"
             "Ver tu saldo: /saldo"
         )
         return
 
-    monto = 0
-    match = re.search(r"(\d[\d\.]*)\s*$", texto)
-    if match:
-        try:
-            monto = int(match.group(1).replace(".", ""))
-        except:
-            monto = 0
-
-    data = obtener_gastos_mes()
-    gastado = data["total_gastado"]
-    disponible = max(0, OCIO_MENSUAL - gastado)
+    monto = extraer_monto(texto)
+    data = obtener_datos_mes()
+    disponible = data["disponible"]
 
     alerta_extra = ""
     if month == 5 and day < 28:
@@ -217,15 +231,15 @@ async def consulta(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif disponible > 80000:
             emoji, resp, detalle = "CUIDADO", "CON MODERACION", f"Te quedan ${disponible:,}. Evalua si es necesario."
         else:
-            emoji, resp, detalle = "NO", "MEJOR NO", f"Solo te quedan ${disponible:,} para el mes."
+            emoji, resp, detalle = "NO", "MEJOR NO", f"Solo te quedan ${disponible:,}."
     elif monto <= 15000:
         emoji, resp, detalle = "SI", "SIN PROBLEMA", f"${monto:,} es un gasto chico. No afecta el plan."
     elif monto <= disponible * 0.4:
         emoji, resp, detalle = "SI", "PUEDES", f"${monto:,} cabe bien. Te quedarian ${disponible - monto:,} para el resto del mes."
     elif monto <= disponible:
-        emoji, resp, detalle = "CUIDADO", "ES EL LIMITE", f"${monto:,} consume casi todo tu ocio restante (${disponible:,}). Despues de esto, nada mas."
+        emoji, resp, detalle = "CUIDADO", "ES EL LIMITE", f"${monto:,} consume casi todo lo que te queda (${disponible:,}). Despues de esto, nada mas."
     elif monto <= disponible + 50000:
-        emoji, resp, detalle = "NO IDEAL", "PASAS POR POCO", f"${monto:,} supera tu saldo (${disponible:,}) por poco. Considera reducir el gasto."
+        emoji, resp, detalle = "NO IDEAL", "PASAS POR POCO", f"${monto:,} supera tu disponible (${disponible:,}) por poco. Considera reducirlo."
     elif monto <= 500000:
         emoji, resp, detalle = "NO", "ESPERA AL BONO", f"${monto:,} no cabe en ocio. Pagalo con el bono trimestral (~28 del mes)."
     else:
@@ -237,191 +251,154 @@ async def consulta(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Monto: ${monto:,}\n\n"
         f"{detalle}"
         f"{alerta_extra}\n\n"
-        f"Presupuesto ocio: ${OCIO_MENSUAL:,}\n"
-        f"Ya gastado: ${gastado:,}\n"
-        f"Disponible: ${disponible:,}\n\n"
+        f"Disponible ahora: ${disponible:,} de ${OCIO_MENSUAL:,}\n\n"
         f"Si lo compras: /gaste {texto}"
     )
 
 async def gaste(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     texto = " ".join(args) if args else ""
-
     if not texto:
         await update.message.reply_text("Uso: /gaste descripcion monto\nEjemplo: /gaste cena 35000")
         return
-
-    monto = 0
-    match = re.search(r"(\d[\d\.]*)\s*$", texto)
-    if match:
-        try:
-            monto = int(match.group(1).replace(".", ""))
-        except:
-            monto = 0
-
+    monto = extraer_monto(texto)
     descripcion = re.sub(r"[\$]?\s*\d[\d\.]*\s*$", "", texto).strip() or "gasto"
-
     if monto == 0:
         await update.message.reply_text("No detecte el monto. Escribe el numero al final.\nEjemplo: /gaste cena 35000")
         return
-
     data = registrar_gasto(descripcion, monto)
-    gastado = data["total_gastado"]
-    disponible = max(0, OCIO_MENSUAL - gastado)
-
-    if disponible > 200000:
-        estado_saldo = "Vas bien, todavia tienes margen."
-    elif disponible > 80000:
-        estado_saldo = "Moderado. Cuida los proximos gastos."
-    elif disponible > 0:
-        estado_saldo = "Poco margen. Sin gastos extras hasta fin de mes."
-    else:
-        estado_saldo = "SALDO AGOTADO. Sin mas gastos de ocio este mes."
-
+    disponible = data["disponible"]
     await update.message.reply_text(
         f"Registrado!\n\n"
         f"Gasto: {descripcion} - ${monto:,}\n\n"
-        f"Presupuesto ocio: ${OCIO_MENSUAL:,}\n"
-        f"Total gastado: ${gastado:,}\n"
-        f"Disponible: ${disponible:,}\n\n"
-        f"{estado_saldo}"
+        f"Te quedan: ${disponible:,} de ${OCIO_MENSUAL:,}\n\n"
+        f"{estado_saldo(disponible)}"
     )
 
 async def saldo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    data = obtener_gastos_mes()
-    gastado = data["total_gastado"]
-    disponible = max(0, OCIO_MENSUAL - gastado)
+    data = obtener_datos_mes()
+    disponible = data["disponible"]
+    gastado = OCIO_MENSUAL - disponible
     detalle = data.get("detalle", [])
 
-    porcentaje = min(100, int((gastado / OCIO_MENSUAL) * 100))
-    bloques = porcentaje // 10
-    barra = "[" + "=" * bloques + "-" * (10 - bloques) + f"] {porcentaje}%"
-
-    if disponible > 200000:
-        estado = "Verde - Bien encaminado"
-    elif disponible > 80000:
-        estado = "Amarillo - Con cuidado"
-    else:
-        estado = "Rojo - Sin margen"
+    porcentaje_usado = min(100, int((gastado / OCIO_MENSUAL) * 100))
+    bloques = porcentaje_usado // 10
+    barra = "[" + "=" * bloques + "-" * (10 - bloques) + f"] {porcentaje_usado}% usado"
 
     historial = ""
     if detalle:
-        historial = "\n\nUltimos gastos:\n"
+        historial = "\n\nUltimos movimientos:\n"
         for g in detalle[-5:]:
-            historial += f"- {g['fecha']}: {g['desc']} ${g['monto']:,}\n"
+            signo = "" if g["monto"] > 0 else "-"
+            historial += f"- {g['fecha']}: {g['desc']} ${abs(g['monto']):,}\n"
     else:
         historial = "\n\nAun no has registrado gastos este mes."
 
     await update.message.reply_text(
         f"Saldo de ocio - {datetime.now(TZ).strftime('%B %Y')}\n\n"
         f"{barra}\n\n"
-        f"Presupuesto: ${OCIO_MENSUAL:,}\n"
-        f"Gastado:     ${gastado:,}\n"
-        f"Disponible:  ${disponible:,}\n\n"
-        f"Estado: {estado}"
+        f"Presupuesto total: ${OCIO_MENSUAL:,}\n"
+        f"Gastado:          ${gastado:,}\n"
+        f"DISPONIBLE:       ${disponible:,}\n\n"
+        f"{estado_saldo(disponible)}"
         f"{historial}"
     )
 
-async def ajustar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Agrega un monto al gasto registrado. Util si gastaste mas de lo que reportaste."""
-    args = context.args
-    texto = " ".join(args) if args else ""
-    monto = 0
-    match = re.search(r"(\d[\d\.]*)", texto)
-    if match:
-        try:
-            monto = int(match.group(1).replace(".", ""))
-        except:
-            monto = 0
-    if monto == 0:
-        await update.message.reply_text("Uso: /ajustar monto\nEjemplo: /ajustar 50000\n\nSirve para agregar gastos que olvidaste registrar.")
-        return
-    data = obtener_gastos_mes()
-    data["total_gastado"] += monto
-    data["detalle"].append({
-        "desc": "ajuste manual",
-        "monto": monto,
-        "fecha": datetime.now(TZ).strftime("%d/%m %H:%M")
-    })
-    guardar_gastos(data)
-    gastado = data["total_gastado"]
-    disponible = max(0, OCIO_MENSUAL - gastado)
-    await update.message.reply_text(
-        f"Ajuste registrado: +${monto:,}\n\n"
-        f"Total gastado ahora: ${gastado:,}\n"
-        f"Disponible: ${disponible:,}"
-    )
-
 async def corregir(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Fija el total gastado a un monto exacto. Util para cuadrar el saldo real."""
+    """Fija el DISPONIBLE a un monto exacto."""
     args = context.args
     texto = " ".join(args) if args else ""
-    monto = 0
-    match = re.search(r"(\d[\d\.]*)", texto)
-    if match:
-        try:
-            monto = int(match.group(1).replace(".", ""))
-        except:
-            monto = 0
-    if monto == 0:
+    monto = extraer_monto(texto) if texto else 0
+    if not texto or monto == 0:
         await update.message.reply_text(
-            "Uso: /corregir monto\nEjemplo: /corregir 150000\n\n"
-            "Fija el total gastado a ese monto exacto.\n"
-            "Usalo cuando el saldo del bot no coincide con la realidad."
+            "Uso: /corregir monto\n"
+            "Ejemplo: /corregir 200000\n\n"
+            "Fija tu disponible a ese monto exacto.\n"
+            "Usalo cuando el saldo del bot no coincide con la realidad.\n\n"
+            "Ejemplo: tu banco dice que te quedan $200.000 para ocio\n"
+            "-> /corregir 200000"
         )
         return
-    data = obtener_gastos_mes()
-    saldo_anterior = data["total_gastado"]
-    data["total_gastado"] = monto
+    data = obtener_datos_mes()
+    anterior = data["disponible"]
+    data["disponible"] = monto
     data["detalle"].append({
-        "desc": f"correccion manual (antes: ${saldo_anterior:,})",
-        "monto": monto - saldo_anterior,
+        "desc": f"correccion manual (antes: ${anterior:,})",
+        "monto": monto - anterior,
         "fecha": datetime.now(TZ).strftime("%d/%m %H:%M")
     })
-    guardar_gastos(data)
-    disponible = max(0, OCIO_MENSUAL - monto)
+    guardar_datos(data)
     await update.message.reply_text(
         f"Saldo corregido!\n\n"
-        f"Antes: ${saldo_anterior:,} gastado\n"
-        f"Ahora: ${monto:,} gastado\n"
-        f"Disponible: ${disponible:,}\n\n"
+        f"Antes: ${anterior:,} disponibles\n"
+        f"Ahora: ${monto:,} disponibles\n\n"
+        f"{estado_saldo(monto)}\n\n"
         f"Usa /saldo para ver el detalle completo."
     )
 
+async def ajustar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Agrega plata al disponible (si sobro algo o recibiste un ingreso extra)."""
+    args = context.args
+    texto = " ".join(args) if args else ""
+    monto = extraer_monto(texto) if texto else 0
+    if not texto or monto == 0:
+        await update.message.reply_text(
+            "Uso: /ajustar monto\n"
+            "Ejemplo: /ajustar 50000\n\n"
+            "Agrega plata a tu disponible.\n"
+            "Usalo si sobro algo del mes anterior o tuviste un ingreso extra."
+        )
+        return
+    data = obtener_datos_mes()
+    data["disponible"] += monto
+    data["detalle"].append({
+        "desc": "ajuste / ingreso extra",
+        "monto": monto,
+        "fecha": datetime.now(TZ).strftime("%d/%m %H:%M")
+    })
+    guardar_datos(data)
+    disponible = data["disponible"]
+    await update.message.reply_text(
+        f"Ajuste registrado: +${monto:,}\n\n"
+        f"Disponible ahora: ${disponible:,}\n\n"
+        f"{estado_saldo(disponible)}"
+    )
+
 async def borrar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Borra el ultimo gasto registrado."""
-    data = obtener_gastos_mes()
+    """Deshace el ultimo movimiento registrado."""
+    data = obtener_datos_mes()
     detalle = data.get("detalle", [])
     if not detalle:
-        await update.message.reply_text("No hay gastos registrados este mes para borrar.")
+        await update.message.reply_text("No hay movimientos registrados este mes para deshacer.")
         return
     ultimo = detalle.pop()
-    data["total_gastado"] = max(0, data["total_gastado"] - ultimo["monto"])
+    # Revertir el movimiento (el monto guarda positivo=ingreso, negativo=gasto)
+    data["disponible"] -= ultimo["monto"]
+    data["disponible"] = max(0, data["disponible"])
     data["detalle"] = detalle
-    guardar_gastos(data)
-    disponible = max(0, OCIO_MENSUAL - data["total_gastado"])
+    guardar_datos(data)
+    disponible = data["disponible"]
+    tipo = "Gasto" if ultimo["monto"] < 0 else "Ingreso"
     await update.message.reply_text(
-        f"Ultimo gasto borrado!\n\n"
-        f"Se elimino: {ultimo['desc']} - ${ultimo['monto']:,}\n\n"
-        f"Total gastado ahora: ${data['total_gastado']:,}\n"
-        f"Disponible: ${disponible:,}"
+        f"Ultimo movimiento deshecho!\n\n"
+        f"{tipo} eliminado: {ultimo['desc']} ${abs(ultimo['monto']):,}\n\n"
+        f"Disponible ahora: ${disponible:,}\n\n"
+        f"{estado_saldo(disponible)}"
     )
 
 async def resetear(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Reinicia el saldo del mes a cero."""
     args = context.args
     if not args or args[0].lower() != "confirmar":
         await update.message.reply_text(
-            "Esto borrara TODOS los gastos del mes y empezara desde cero.\n\n"
-            "Si estas seguro, escribe:\n/resetear confirmar"
+            "Esto reinicia el saldo del mes a $353.000 y borra el historial.\n\n"
+            "Si estas seguro:\n/resetear confirmar"
         )
         return
     now = datetime.now(TZ)
-    data = {"mes": now.strftime("%Y-%m"), "total_gastado": 0, "detalle": []}
-    guardar_gastos(data)
+    data = {"mes": now.strftime("%Y-%m"), "disponible": OCIO_MENSUAL, "detalle": []}
+    guardar_datos(data)
     await update.message.reply_text(
         f"Saldo reiniciado!\n\n"
-        f"Gastos del mes borrados.\n"
         f"Disponible: ${OCIO_MENSUAL:,}\n\n"
         f"Empieza a registrar con /gaste descripcion monto"
     )
@@ -454,12 +431,12 @@ def main():
     app.add_handler(CommandHandler("consulta", consulta))
     app.add_handler(CommandHandler("gaste", gaste))
     app.add_handler(CommandHandler("saldo", saldo))
-    app.add_handler(CommandHandler("ajustar", ajustar))
     app.add_handler(CommandHandler("corregir", corregir))
+    app.add_handler(CommandHandler("ajustar", ajustar))
     app.add_handler(CommandHandler("borrar", borrar))
     app.add_handler(CommandHandler("resetear", resetear))
     setup_scheduler(app)
-    logger.info("Bot iniciado v4")
+    logger.info("Bot iniciado v5")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
